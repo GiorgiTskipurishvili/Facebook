@@ -23,7 +23,11 @@ const cors = require("cors")
 
 const app = express()
 const server = http.createServer(app)
-const CLIENT_URL = process.env.CLIENT_URL || "*"
+// CLIENT_URL: ერთი ან რამდენიმე მისამართი მძიმით ("https://a.vercel.app,https://b.vercel.app")
+// ბოლო "/" იშლება, რადგან ბრაუზერის Origin მას არ შეიცავს. არ არის მითითებული -> ყველა ნებადართულია
+const CLIENT_URL = process.env.CLIENT_URL
+    ? process.env.CLIENT_URL.split(",").map(url => url.trim().replace(/\/+$/, "")).filter(Boolean)
+    : "*"
 const io = new Server(server, {
     cors: { origin: CLIENT_URL }
 })

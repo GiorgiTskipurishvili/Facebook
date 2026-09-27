@@ -1,0 +1,12 @@
+{
+  "name": "facebook",
+  "private": true,
+  "description": "Facebook-ის ანალოგის backend. კოდი server/ საქაღალდეშია - ეს ფაილი hosting-ებისთვისაა (Render), რომლებიც repo-ს ძირიდან იწყებენ.",
+  "scripts": {
+    "build": "npm install --prefix server --omit=dev",
+    "start": "npm run start:prod --prefix server"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
