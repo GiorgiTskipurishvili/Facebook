@@ -5,7 +5,7 @@ const commentsModel = require("../models/comments.model")
 const notificationModel = require("../models/notification.model")
 const upload = require("../middleware/upload.middleware")
 const { notify, removeNotification } = require("../utils/notify")
-const { removeUpload } = require("../utils/files")
+const { removeUploadIfUnused } = require("../utils/files")
 const getPagination = require("../utils/pagination")
 const postsRouter = Router()
 const mongoose = require("mongoose")
@@ -13,18 +13,33 @@ const { isValidObjectId } = mongoose
 
 const USER_FIELDS = "FirstName LastName ProfilePicture"
 
-// პოსტებს ამატებს commentsCount, likesCount და likedByMe ველებს
+// ავტორი + გაზიარებული პოსტი თავისი ავტორით
+function populatePost(query){
+    return query
+        .populate("user", USER_FIELDS)
+        .populate({ path: "sharedPost", populate: { path: "user", select: USER_FIELDS } })
+}
+
+async function countBy(model, field, ids){
+    const counts = await model.aggregate([
+        { $match: { [field]: { $in: ids } } },
+        { $group: { _id: `$${field}`, count: { $sum: 1 } } }
+    ])
+    return new Map(counts.map(c => [c._id.toString(), c.count]))
+}
+
+// პოსტებს ამატებს commentsCount, sharesCount, likesCount და likedByMe ველებს
 async function withStats(posts, userId){
     const postIds = posts.map(p => p._id)
-    const counts = await commentsModel.aggregate([
-        { $match: { post: { $in: postIds } } },
-        { $group: { _id: "$post", count: { $sum: 1 } } }
+    const [comments, shares] = await Promise.all([
+        countBy(commentsModel, "post", postIds),
+        countBy(postsModel, "sharedPost", postIds)
     ])
-    const countMap = new Map(counts.map(c => [c._id.toString(), c.count]))
 
     return posts.map(p => {
         const post = p.toObject()
-        post.commentsCount = countMap.get(p._id.toString()) || 0
+        post.commentsCount = comments.get(p._id.toString()) || 0
+        post.sharesCount = shares.get(p._id.toString()) || 0
         post.likesCount = p.likes.length
         post.likedByMe = p.likes.some(id => id.toString() === userId)
         return post
@@ -35,8 +50,7 @@ async function sendPostsPage(req, res, filter, message){
     const { page, limit, skip } = getPagination(req.query)
 
     const [posts, total] = await Promise.all([
-        postsModel.find(filter)
-            .populate("user", USER_FIELDS)
+        populatePost(postsModel.find(filter))
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit),
@@ -51,6 +65,16 @@ async function sendPostsPage(req, res, filter, message){
     })
 }
 
+async function sendOnePost(res, post, userId, message, status = 200){
+    const populated = await populatePost(postsModel.findById(post._id))
+    const [result] = await withStats([populated], userId)
+    res.status(status).json({ message, data: result })
+}
+
+// ფოტო = პოსტი სურათით (გაზიარებების გარეშე)
+// ($nin null - ძველ პოსტებს image ველი შეიძლება საერთოდ არ ჰქონდეთ)
+const PHOTO_FILTER = { image: { $nin: ["", null] }, sharedPost: null }
+
 // მთავარი feed: ჩემი, მეგობრების და იმ ხალხის პოსტები ვისაც ვაფოლოვებ
 postsRouter.get("/", async (req,res)=>{
     const currentUser = await usersModel.findById(req.userId)
@@ -60,6 +84,21 @@ postsRouter.get("/", async (req,res)=>{
 
     const authors = [req.userId, ...currentUser.friends, ...currentUser.following]
     await sendPostsPage(req, res, { user: { $in: authors } }, "წარმატებით წამოვიღეთ პოსტები")
+})
+
+// ყველა მომხმარებლის ფოტოები (ფოტოების სექცია)
+postsRouter.get("/photos", async (req,res)=>{
+    await sendPostsPage(req, res, PHOTO_FILTER, "ფოტოები")
+})
+
+// კონკრეტული მომხმარებლის ფოტოები (პროფილის "ფოტოები" tab)
+postsRouter.get("/photos/user/:userId", async (req,res)=>{
+    const {userId} = req.params
+    if(!isValidObjectId(userId)){
+        return res.status(400).json({ message: "მომხმარებლის ID არასწორია" })
+    }
+
+    await sendPostsPage(req, res, { ...PHOTO_FILTER, user: userId }, "მომხმარებლის ფოტოები")
 })
 
 // კონკრეტული მომხმარებლის პოსტები (პროფილის გვერდისთვის)
@@ -78,14 +117,12 @@ postsRouter.get("/:id", async(req,res)=>{
         return res.status(400).json({ message: "პოსტის ID არასწორია" })
     }
 
-    const findPost = await postsModel.findById(id).populate("user", USER_FIELDS)
-
-    if(!findPost){
+    const post = await postsModel.findById(id)
+    if(!post){
         return res.status(404).json({ message: "პოსტი ვერ მოიძებნა" })
     }
 
-    const [post] = await withStats([findPost], req.userId)
-    res.json({ message: "წარმატებით წამოვიღეთ პოსტი", data: post })
+    await sendOnePost(res, post, req.userId, "წარმატებით წამოვიღეთ პოსტი")
 })
 
 // ვინ მოიწონა პოსტი
@@ -103,6 +140,22 @@ postsRouter.get("/:id/likes", async(req,res)=>{
     res.json({ message: "მოწონებების სია", data: post.likes })
 })
 
+// ვინ გააზიარა პოსტი
+postsRouter.get("/:id/shares", async(req,res)=>{
+    const {id} = req.params
+    if(!isValidObjectId(id)){
+        return res.status(400).json({ message: "პოსტის ID არასწორია" })
+    }
+
+    const shares = await postsModel.find({ sharedPost: id }).populate("user", USER_FIELDS).sort({ createdAt: -1 })
+
+    // ერთი ადამიანი შეიძლება რამდენჯერმე აზიარებდეს - სიაში ერთხელ
+    const users = new Map()
+    shares.forEach(s => s.user && users.set(s.user._id.toString(), s.user))
+
+    res.json({ message: "გაზიარებების სია", data: [...users.values()] })
+})
+
 postsRouter.post("/", upload.single("image"), async (req, res) => {
     const desc = req.body.desc?.trim()
 
@@ -118,10 +171,42 @@ postsRouter.post("/", upload.single("image"), async (req, res) => {
 
     await usersModel.findByIdAndUpdate(req.userId, { $push: { Posts: newPost._id } })
 
-    const populatedPost = await newPost.populate("user", USER_FIELDS)
-    const [post] = await withStats([populatedPost], req.userId)
+    await sendOnePost(res, newPost, req.userId, "პოსტი წარმატებით გამოქვეყნდა", 201)
+})
 
-    res.status(201).json({ message: "პოსტი წარმატებით გამოქვეყნდა", data: post })
+// გაზიარება: ახალი პოსტი, რომელიც ორიგინალზე მიუთითებს (desc - არასავალდებულო კომენტარი)
+postsRouter.post("/:id/share", async (req, res) => {
+    const { id } = req.params
+    if (!isValidObjectId(id)) {
+        return res.status(400).json({ message: "პოსტის ID არასწორია" })
+    }
+
+    const post = await postsModel.findById(id)
+    if (!post) {
+        return res.status(404).json({ message: "პოსტი ვერ მოიძებნა" })
+    }
+
+    // გაზიარების გაზიარება -> ყოველთვის ორიგინალს ვაზიარებთ
+    const original = post.sharedPost ? await postsModel.findById(post.sharedPost) : post
+    if (!original) {
+        return res.status(404).json({ message: "ორიგინალი პოსტი აღარ არსებობს" })
+    }
+
+    const sharePost = await postsModel.create({
+        desc: req.body.desc?.trim() || "",
+        user: req.userId,
+        type: "share",
+        sharedPost: original._id
+    })
+
+    await usersModel.findByIdAndUpdate(req.userId, { $push: { Posts: sharePost._id } })
+    await notify(req, { recipient: original.user, type: "post_share", post: original._id })
+
+    const sharesCount = await postsModel.countDocuments({ sharedPost: original._id })
+
+    const populated = await populatePost(postsModel.findById(sharePost._id))
+    const [result] = await withStats([populated], req.userId)
+    res.status(201).json({ message: "პოსტი გაზიარდა", data: result, originalId: original._id, sharesCount })
 })
 
 // რედაქტირება: desc, ახალი ფოტო, ან removeImage=true ფოტოს მოსაშორებლად
@@ -141,25 +226,27 @@ postsRouter.put("/:id", upload.single("image"), async (req, res) => {
         return res.status(403).json({ message: "არ გაქვს უფლება ამ პოსტის რედაქტირებაზე" })
     }
 
+    const isShare = post.type === "share"
+    if (isShare && req.file) {
+        return res.status(400).json({ message: "გაზიარებულ პოსტს ფოტოს ვერ დაამატებ" })
+    }
+
+    const oldImage = post.image
     if (desc !== undefined) post.desc = desc.trim()
     if (req.file) {
-        removeUpload(post.image)
         post.image = `/uploads/${req.file.filename}`
     } else if (removeImage === "true" || removeImage === true) {
-        removeUpload(post.image)
         post.image = ""
     }
 
-    if (!post.desc && !post.image) {
+    if (!isShare && !post.desc && !post.image) {
         return res.status(400).json({ message: "პოსტს სჭირდება ტექსტი ან ფოტო მაინც" })
     }
 
     await post.save()
+    if (oldImage !== post.image) await removeUploadIfUnused(oldImage)
 
-    const populatedPost = await post.populate("user", USER_FIELDS)
-    const [result] = await withStats([populatedPost], req.userId)
-
-    res.json({ message: "პოსტი წარმატებით განახლდა", data: result })
+    await sendOnePost(res, post, req.userId, "პოსტი წარმატებით განახლდა")
 })
 
 postsRouter.delete("/:id", async (req, res) => {
@@ -182,7 +269,8 @@ postsRouter.delete("/:id", async (req, res) => {
         commentsModel.deleteMany({ post: id }),
         notificationModel.deleteMany({ post: id })
     ])
-    removeUpload(post.image)
+    // ფოტო შეიძლება ახლაც პროფილის სურათი იყოს - მაშინ ფაილი რჩება
+    await removeUploadIfUnused(post.image)
 
     res.json({ message: "პოსტი წარმატებით წაიშალა" })
 })

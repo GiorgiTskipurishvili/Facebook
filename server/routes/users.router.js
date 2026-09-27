@@ -10,7 +10,7 @@ const notificationModel = require("../models/notification.model")
 const conversationModel = require("../models/conversation.model")
 const messageModel = require("../models/message.model")
 const upload = require("../middleware/upload.middleware")
-const { removeUpload } = require("../utils/files")
+const { removeUpload, removeUploadIfUnused } = require("../utils/files")
 const getPagination = require("../utils/pagination")
 const { isValidObjectId } = mongoose
 
@@ -23,15 +23,20 @@ function escapeRegex(text){
 }
 
 usersRouter.get("/", async (req,res)=>{
-    const { limit, skip } = getPagination(req.query, 20)
+    const { page, limit, skip } = getPagination(req.query, 20)
+    const filter = { _id: { $ne: req.userId } }
 
-    const users = await usersModel
-        .find({ _id: { $ne: req.userId } })
-        .select(`${PUBLIC_FIELDS} isOnline`)
-        .skip(skip)
-        .limit(limit)
+    const [users, total] = await Promise.all([
+        usersModel
+            .find(filter)
+            .select(`${PUBLIC_FIELDS} isOnline`)
+            .sort({ createdAt: -1 })
+            .skip(skip)
+            .limit(limit),
+        usersModel.countDocuments(filter)
+    ])
 
-    res.json({message:"მომხმარებლების სია", data:users})
+    res.json({message:"მომხმარებლების სია", data:users, page, hasMore: skip + users.length < total})
 })
 
 // ძებნა სახელით/გვარით: /users/search?q=გიორგი
@@ -96,31 +101,57 @@ usersRouter.put("/me/password", async (req,res)=>{
     res.json({message:"პაროლი წარმატებით შეიცვალა"})
 })
 
-usersRouter.put("/me/avatar", upload.single("image"), async (req,res)=>{
-    if(!req.file){
-        return res.status(400).json({message:"სურათი აუცილებელია"})
-    }
+// avatar -> ProfilePicture, cover -> CoverPicture
+const PICTURES = {
+    avatar: { field: "ProfilePicture", postType: "profile_picture", message: "პროფილის სურათი განახლდა" },
+    cover: { field: "CoverPicture", postType: "cover_photo", message: "ქავერ ფოტო განახლდა" }
+}
 
-    const user = await usersModel.findById(req.userId)
-    removeUpload(user.ProfilePicture)
-    user.ProfilePicture = `/uploads/${req.file.filename}`
+async function setPicture(userId, kind, image){
+    const { field } = PICTURES[kind]
+    const user = await usersModel.findById(userId)
+    const oldImage = user[field]
+    user[field] = image
     await user.save()
+    // ძველი სურათი შეიძლება ფოტოდ (პოსტად) დარჩეს - ფაილს მხოლოდ მაშინ ვშლით, თუ აღარსად გამოიყენება
+    if(oldImage !== image) await removeUploadIfUnused(oldImage)
+    return user
+}
 
-    res.json({message:"პროფილის სურათი განახლდა", data:user})
-})
+// ახალი სურათის ატვირთვა -> Facebook-ის მსგავსად პოსტიც იქმნება ("განაახლა პროფილის სურათი")
+for (const kind of Object.keys(PICTURES)) {
+    usersRouter.put(`/me/${kind}`, upload.single("image"), async (req,res)=>{
+        if(!req.file){
+            return res.status(400).json({message:"სურათი აუცილებელია"})
+        }
 
-usersRouter.put("/me/cover", upload.single("image"), async (req,res)=>{
-    if(!req.file){
-        return res.status(400).json({message:"სურათი აუცილებელია"})
-    }
+        const image = `/uploads/${req.file.filename}`
+        const post = await postsModel.create({ user: req.userId, image, type: PICTURES[kind].postType })
+        await usersModel.findByIdAndUpdate(req.userId, { $push: { Posts: post._id } })
 
-    const user = await usersModel.findById(req.userId)
-    removeUpload(user.CoverPicture)
-    user.CoverPicture = `/uploads/${req.file.filename}`
-    await user.save()
+        const user = await setPicture(req.userId, kind, image)
+        res.json({message:PICTURES[kind].message, data:user, postId:post._id})
+    })
 
-    res.json({message:"ქავერ ფოტო განახლდა", data:user})
-})
+    // არსებული ფოტოს (საკუთარი პოსტის სურათის) დაყენება
+    usersRouter.put(`/me/${kind}/from-post/:postId`, async (req,res)=>{
+        const {postId} = req.params
+        if(!isValidObjectId(postId)){
+            return res.status(400).json({message:"პოსტის ID არასწორია"})
+        }
+
+        const post = await postsModel.findById(postId)
+        if(!post || !post.image){
+            return res.status(404).json({message:"ფოტო ვერ მოიძებნა"})
+        }
+        if(post.user.toString() !== req.userId){
+            return res.status(403).json({message:"მხოლოდ საკუთარი ფოტოს დაყენება შეგიძლიათ"})
+        }
+
+        const user = await setPicture(req.userId, kind, post.image)
+        res.json({message:PICTURES[kind].message, data:user})
+    })
+}
 
 // საკუთარი ანგარიშის წაშლა (პაროლის დადასტურებით) და ყველა დაკავშირებული მონაცემის გასუფთავება
 usersRouter.delete("/me", async (req,res)=>{

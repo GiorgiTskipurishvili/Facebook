@@ -11,4 +11,21 @@ function removeUpload(filePath) {
     fs.unlink(fullPath, () => {})
 }
 
-module.exports = { removeUpload }
+// ერთი ფაილი შეიძლება ერთდროულად იყოს პოსტის ფოტოც და პროფილის/ქავერ სურათიც -
+// ვშლით მხოლოდ მაშინ, როცა აღარსად გამოიყენება
+async function removeUploadIfUnused(filePath) {
+    if (!filePath) return
+
+    // მოდელები აქ იტვირთება, რომ წრიული require არ მივიღოთ
+    const postsModel = require("../models/posts.model")
+    const usersModel = require("../models/users.model")
+
+    const [usedInPost, usedByUser] = await Promise.all([
+        postsModel.exists({ image: filePath }),
+        usersModel.exists({ $or: [{ ProfilePicture: filePath }, { CoverPicture: filePath }] })
+    ])
+
+    if (!usedInPost && !usedByUser) removeUpload(filePath)
+}
+
+module.exports = { removeUpload, removeUploadIfUnused }
