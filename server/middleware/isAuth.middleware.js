@@ -4,12 +4,12 @@ function getToken(headers){
     if(!headers["authorization"]) return null
 
     const [type, token] = headers["authorization"].split(" ")
-    
+
     return type === "Bearer" ? token : null
 }
 
 
-async function isAuth(req,res,next){
+function isAuth(req,res,next){
     const token = getToken(req.headers)
 
     if(!token){
@@ -17,16 +17,15 @@ async function isAuth(req,res,next){
     }
 
     try{
-        const payLoad = await jwt.verify(token, process.env.JWT_SECRET)
-        console.log(payLoad)
+        const payLoad = jwt.verify(token, process.env.JWT_SECRET)
         req.userId= payLoad.userId
 
         next()
     }catch(error){
-        return res.status(401).json({message:"ტოკენი არასწორია"})
+        return res.status(401).json({message:"ტოკენი არასწორია ან ვადა გაუვიდა"})
     }
 
 }
 
 
-module.exports = isAuth 
+module.exports = isAuth

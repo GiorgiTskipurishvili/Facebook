@@ -3,6 +3,7 @@ const mongoose = require("mongoose")
 const storyModel = require("../models/story.model")
 const usersModel = require("../models/users.model")
 const upload = require("../middleware/upload.middleware")
+const { removeUpload } = require("../utils/files")
 const { isValidObjectId } = mongoose
 
 const storiesRouter = Router()
@@ -25,9 +26,13 @@ storiesRouter.post("/", upload.single("image"), async (req, res) => {
 
 storiesRouter.get("/feed", async (req, res) => {
     const currentUser = await usersModel.findById(req.userId)
+    if (!currentUser) {
+        return res.status(404).json({ message: "მომხმარებელი ვერ მოიძებნა" })
+    }
 
+    // TTL index-ი წაშლას რამდენიმე წუთით აგვიანებს, ამიტომ ვადაგასულებს აქვე ვფილტრავთ
     const stories = await storyModel
-        .find({ user: { $in: [...currentUser.friends, req.userId] } })
+        .find({ user: { $in: [...currentUser.friends, req.userId] }, expiresAt: { $gt: new Date() } })
         .populate("user", "FirstName LastName ProfilePicture")
         .sort({ createdAt: -1 })
 
@@ -93,6 +98,7 @@ storiesRouter.delete("/:id", async (req, res) => {
     }
 
     await storyModel.findByIdAndDelete(id)
+    removeUpload(story.image)
     res.json({ message: "სთორი წაიშალა" })
 })
 

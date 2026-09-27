@@ -2,10 +2,10 @@ const { default: mongoose } = require("mongoose");
 
 const userSchema = new mongoose.Schema({
     FirstName:{
-        type:String
+        type:String, required:true, trim:true
     },
     LastName:{
-        type:String
+        type:String, required:true, trim:true
     },
     BirthDate:{
         type:Date
@@ -14,32 +14,34 @@ const userSchema = new mongoose.Schema({
         type:String
     },
     Email:{
-        type:String
+        type:String, required:true, unique:true, lowercase:true, trim:true
     },
     Password:{
-        type:String
+        type:String, required:true, select:false
     },
     ProfilePicture: { type: String, default: "" },
+    CoverPicture: { type: String, default: "" },
+    Bio: { type: String, default: "", maxlength: 200 },
     Posts:{
-        type: [mongoose.Schema.Types.ObjectId], ref:"posts", default:[]
+        type: [mongoose.Schema.Types.ObjectId], ref:"post", default:[]
     },
-    friends: [{ 
-        type: mongoose.Schema.Types.ObjectId, ref: "user" 
+    friends: [{
+        type: mongoose.Schema.Types.ObjectId, ref: "user"
     }],
     followers: [{
-         type: mongoose.Schema.Types.ObjectId, ref: "user" 
+         type: mongoose.Schema.Types.ObjectId, ref: "user"
     }],
-    following: [{ 
-        type: mongoose.Schema.Types.ObjectId, ref: "user" 
+    following: [{
+        type: mongoose.Schema.Types.ObjectId, ref: "user"
     }],
-    isOnline: { 
-        type: Boolean, default: false 
+    isOnline: {
+        type: Boolean, default: false
     },
-    lastSeen: { 
-        type: Date, default: Date.now 
+    lastSeen: {
+        type: Date, default: Date.now
     }
 },
-    {      
+    {
         timestamps:true
     }
 )
