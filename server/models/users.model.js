@@ -19,8 +19,24 @@ const userSchema = new mongoose.Schema({
     Password:{
         type:String
     },
+    ProfilePicture: { type: String, default: "" },
     Posts:{
         type: [mongoose.Schema.Types.ObjectId], ref:"posts", default:[]
+    },
+    friends: [{ 
+        type: mongoose.Schema.Types.ObjectId, ref: "user" 
+    }],
+    followers: [{
+         type: mongoose.Schema.Types.ObjectId, ref: "user" 
+    }],
+    following: [{ 
+        type: mongoose.Schema.Types.ObjectId, ref: "user" 
+    }],
+    isOnline: { 
+        type: Boolean, default: false 
+    },
+    lastSeen: { 
+        type: Date, default: Date.now 
     }
 },
     {      
